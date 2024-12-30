@@ -6,8 +6,8 @@ import { FileProvider } from '@/lib/context/FileProvider';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'AI Code Assistant',
-  description: 'Interactive code generation and file management',
+  title: 'DeepBuild',
+  description: 'AI-Powered Software Project Generator',
 };
 
 export default function RootLayout({

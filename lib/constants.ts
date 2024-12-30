@@ -1,5 +1,5 @@
 export const HYPERBOLIC_API_URL = 'https://api.hyperbolic.xyz/v1/chat/completions';
-export const HYPERBOLIC_API_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJtYXJ0aW5ib3dsaW5nQGdtYWlsLmNvbSJ9._tVpbYFs8-54B8VWrY5inPz6qHs2wC0lbp-4OLkpm9s';
+export const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 
 export const HYPERBOLIC_CHAT_CONFIG = {
   model: 'deepseek-ai/DeepSeek-V3',
@@ -9,11 +9,7 @@ export const HYPERBOLIC_CHAT_CONFIG = {
   stream: false
 };
 
-
-export const API_URL = 'https://api.deepseek.com/v1/chat/completions';
-export const API_KEY = 'sk-43fd577925cd4caf8d3e87fc9d8b056d';
-
-export const CHAT_CONFIG = {
+export const DEEPSEEK_CHAT_CONFIG = {
   model: 'deepseek-chat',
   max_tokens: 8000,
   temperature: 0.7,
@@ -21,7 +17,9 @@ export const CHAT_CONFIG = {
   stream: false
 };
 
-export const BRIEF_SYSTEM_PROMPT = `You are DeepSeek Engineer, an elite software engineer. When a user describes their utility app, create a simple but clear project overview.
+export const APP_NAME = 'DeepBuild';
+
+export const BRIEF_SYSTEM_PROMPT = `You are DeepBuild, an elite software engineer. When a user describes their utility app, create a simple but clear project overview.
 
 Your response must always be wrapped in <final_json> tags and match this structure:
 {
@@ -59,7 +57,7 @@ Your response must always be wrapped in <final_json> tags and match this structu
 
 Remember: Always wrap your response in <final_json> tags and ensure it's valid JSON.`;
 
-export const IMPLEMENTATION_SYSTEM_PROMPT = `You are DeepSeek Engineer, an elite software engineer with decades of experience across all programming domains. You will receive a project brief and need to provide a detailed implementation plan.
+export const IMPLEMENTATION_SYSTEM_PROMPT = `You are DeepBuild, an elite software engineer with decades of experience across all programming domains. You will receive a project brief and need to provide a detailed implementation plan.
 
 Your response must always be wrapped in <final_json> tags and match this structure:
 {

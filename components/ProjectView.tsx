@@ -8,7 +8,9 @@ import { StoredProject, FileImplementation } from '@/lib/types';
 import { useFiles } from '@/hooks/useFiles';
 import { useChat } from '@/hooks/useChat';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Settings, Download, Trash2 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import JSZip from 'jszip';
 
 interface ProjectViewProps {
   project: StoredProject;
@@ -21,13 +23,16 @@ export function ProjectView({ project: initialProject, onBack }: ProjectViewProp
   const [isInitialSetup] = useState(() => 
     initialProject.files.every(f => !f.content)
   );
-  const { updateProjectFile, parseAIResponse, currentProject, refreshProject } = useFiles();
+  const { updateProjectFile, currentProject, refreshProject, loading, deleteProject } = useFiles();
   const { sendMessage } = useChat();
   const chatRef = useRef<{ addMessage: (message: string) => void }>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Keep project data fresh
   useEffect(() => {
-    refreshProject(initialProject.id);
+    if (initialProject.id) {
+      refreshProject(initialProject.id);
+    }
   }, [initialProject.id, refreshProject]);
 
   // Use the current project data instead of the initial project
@@ -66,7 +71,6 @@ Ensure the code follows best practices and includes proper error handling.`;
           error: undefined
         });
 
-        await refreshProject(project.id);
         chatRef.current?.addMessage(`✅ Successfully updated ${file.path}`);
       } else {
         throw new Error('No file content in response');
@@ -75,11 +79,11 @@ Ensure the code follows best practices and includes proper error handling.`;
       console.error(`Error refreshing file ${file.path}:`, error);
       await updateProjectFile(project.id, file.path, {
         status: 'error',
-        error: error.message
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
 
       chatRef.current?.addMessage(
-        `❌ Error regenerating ${file.path}: ${error.message}`
+        `❌ Error regenerating ${file.path}: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     } finally {
       setIsRegenerating(false);
@@ -88,16 +92,38 @@ Ensure the code follows best practices and includes proper error handling.`;
 
   const handleAnswersComplete = async (answers: Record<string, string>) => {
     try {
+      if (!chatRef.current) {
+        console.error('Chat ref is not available');
+        return;
+      }
+
       setIsRegenerating(true);
       
-      for (const file of project.files) {
+      // Get the list of files from the brief
+      const filesToCreate = project.brief.project_brief.technical_outline.basic_structure.files;
+      
+      chatRef.current?.addMessage(
+        `Thank you for answering all the questions! Based on your answers:
+${Object.entries(answers)
+  .map(([question, answer]) => `Q: ${question}\nA: ${answer}`)
+  .join('\n\n')}
+
+I'll now generate the following files:
+${filesToCreate.map(f => `- ${f.file}`).join('\n')}`
+      );
+      
+      for (const fileInfo of filesToCreate) {
         try {
-          await updateProjectFile(project.id, file.path, {
+          // Update file status to pending
+          await updateProjectFile(project.id, fileInfo.file, {
             status: 'pending'
           });
 
+          // Refresh project to update UI
+          await refreshProject(project.id);
+
           chatRef.current?.addMessage(
-            `🔄 Generating implementation for ${file.path}...`
+            `\n🔄 Now generating: ${fileInfo.file}\nPurpose: ${fileInfo.purpose}`
           );
 
           const filePrompt = `Based on this project brief: ${JSON.stringify(project.brief)}
@@ -107,86 +133,194 @@ ${Object.entries(answers)
   .map(([question, answer]) => `Q: ${question}\nA: ${answer}`)
   .join('\n\n')}
 
-Please provide the complete implementation for the file: ${file.path}
-Purpose: ${project.brief.project_brief.technical_outline.basic_structure.files.find(f => f.file === file.path)?.purpose}`;
+Please provide a complete implementation for the file: ${fileInfo.file}
+Purpose: ${fileInfo.purpose}
 
-          const response = await sendMessage(filePrompt, 'implementation');
+Your response must follow the implementation system prompt format with <final_json> tags.
+Focus on creating this specific file with proper implementation details.`;
+
+          const { message, response } = await sendMessage(filePrompt, 'implementation');
           
-          // Parse the JSON response from within the tags
-          const match = response.match(/<final_json>(.*?)<\/final_json>/s);
-          if (!match) {
-            throw new Error('Invalid response format');
+          // Show the thought process and explanation
+          if (response?.thought_process) {
+            chatRef.current?.addMessage(
+              `💭 Implementation approach for ${fileInfo.file}:
+              
+Problem Analysis: ${response.thought_process.problem_analysis}
+
+Solution Approach: ${response.thought_process.solution_approach}
+
+Implementation Plan:
+${response.thought_process.implementation_plan}
+
+Potential Issues:
+${response.thought_process.potential_issues}`
+            );
           }
 
-          const parsedResponse = JSON.parse(match[1]);
+          // Extract file content
+          let fileContent = '';
+          let explanation = '';
           
-          // Show the assistant's explanation of what was implemented
-          if (parsedResponse.assistant_reply) {
-            chatRef.current?.addMessage(parsedResponse.assistant_reply);
+          if (response) {
+            // First try to get content from files_to_create
+            const fileToCreate = response.files_to_create?.find((f: { path: string }) => f.path === fileInfo.file);
+            if (fileToCreate?.content) {
+              fileContent = fileToCreate.content;
+              explanation = response.assistant_reply || '';
+              console.log('Found content in files_to_create:', { path: fileToCreate.path, contentLength: fileContent.length });
+            }
+            // Fallback to files_to_edit if no creation found
+            const fileToEdit = response.files_to_edit?.find((f: { path: string }) => f.path === fileInfo.file);
+            if (!fileContent && fileToEdit?.new_snippet) {
+              fileContent = fileToEdit.new_snippet;
+              explanation = fileToEdit.change_reason || '';
+              console.log('Found content in files_to_edit:', { path: fileToEdit.path, contentLength: fileContent.length });
+            }
           }
-
-          const fileContent = parsedResponse.files_to_create?.[0]?.content;
 
           if (!fileContent) {
-            throw new Error('No file content in response');
+            console.error('No file content found. Response structure:', {
+              hasFilesToCreate: !!response?.files_to_create,
+              filesToCreateLength: response?.files_to_create?.length,
+              hasFilesToEdit: !!response?.files_to_edit,
+              filesToEditLength: response?.files_to_edit?.length
+            });
+            throw new Error('No valid file content found in response JSON');
           }
 
-          await updateProjectFile(project.id, file.path, {
+          // Update file with content and status
+          await updateProjectFile(project.id, fileInfo.file, {
             content: fileContent,
             status: 'completed',
             error: undefined
           });
 
-          chatRef.current?.addMessage(
-            `✅ Successfully generated ${file.path}`
-          );
-        } catch (error) {
-          console.error(`Error generating file ${file.path}:`, error);
-          await updateProjectFile(project.id, file.path, {
-            status: 'error',
-            error: error.message
-          });
+          // Refresh project to update UI
+          await refreshProject(project.id);
+
+          // Show the explanation in chat
+          if (explanation) {
+            chatRef.current?.addMessage(explanation);
+          }
 
           chatRef.current?.addMessage(
-            `❌ Error generating ${file.path}: ${error.message}`
+            `✅ Successfully generated ${fileInfo.file}`
+          );
+
+        } catch (error) {
+          console.error(`Error generating file ${fileInfo.file}:`, error);
+          await updateProjectFile(project.id, fileInfo.file, {
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+
+          // Refresh project to update UI
+          await refreshProject(project.id);
+
+          chatRef.current?.addMessage(
+            `❌ Error generating ${fileInfo.file}: ${error instanceof Error ? error.message : 'Unknown error'}`
           );
         }
       }
 
       await refreshProject(project.id);
       
-      // Final message with next steps
       chatRef.current?.addMessage(
-        `🎉 All files have been generated successfully! What would you like to work on next? I can help you with:
+        `\n🎉 Project setup complete! All files have been generated successfully.
+
+What would you like to work on next? I can help you with:
 
 1. Understanding how the code works
 2. Making modifications or improvements
 3. Adding new features
 4. Testing and debugging
-5. Or anything else you'd like to explore!`
+5. Or anything else you'd like to explore!
+
+Just let me know what interests you and I'll be happy to help.`
       );
+
     } catch (error) {
       console.error('Error implementing project:', error);
       chatRef.current?.addMessage(
-        `❌ Error during project setup: ${error.message}`
+        `❌ Error during project setup: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     } finally {
       setIsRegenerating(false);
     }
   };
 
+  const handleBack = () => {
+    onBack();
+  };
+
+  const handleDelete = async () => {
+    if (confirm('Are you sure you want to delete this project?')) {
+      await deleteProject(project.id);
+      onBack();
+    }
+  };
+
+  const handleExport = async () => {
+    const zip = new JSZip();
+
+    // Add all project files to the zip
+    project.files.forEach(file => {
+      zip.file(file.path, file.content || '');
+    });
+
+    // Generate the zip file
+    const content = await zip.generateAsync({ type: 'blob' });
+    
+    // Create download link
+    const url = window.URL.createObjectURL(content);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${project.name}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-screen">Loading projects...</div>;
+  }
+
   return (
     <div className="h-screen flex flex-col">
-      {/* Header with back button */}
-      <div className="border-b border-border p-4 flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <div>
-          <h2 className="text-lg font-semibold">{project.name}</h2>
-          <p className="text-sm text-muted-foreground">
-            {project.brief.project_brief.app_summary.purpose}
-          </p>
+      <div className="border-b border-border p-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" onClick={handleBack}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <h1 className="text-xl font-semibold">{project.name}</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={handleExport}
+            className="h-8 w-8"
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={handleDelete}
+            className="h-8 w-8 text-destructive hover:text-destructive"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => setShowSettings(true)}
+            className="h-8 w-8"
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
@@ -217,18 +351,35 @@ Purpose: ${project.brief.project_brief.technical_outline.basic_structure.files.f
         </div>
 
         {/* Chat */}
-        <div className="w-96">
-          <ProjectChat 
-            ref={chatRef}
-            project={project}
-            currentFile={selectedFile}
-            disabled={isRegenerating}
-            isInitialSetup={isInitialSetup}
-            brief={isInitialSetup ? project.brief : undefined}
-            onAnswersComplete={handleAnswersComplete}
-          />
+        <div className="w-96 flex flex-col h-full">
+          <div className="flex-1 overflow-y-auto">
+            <ProjectChat 
+              ref={chatRef}
+              project={project}
+              currentFile={selectedFile}
+              disabled={false}
+              inputDisabled={isRegenerating}
+              isInitialSetup={isInitialSetup}
+              brief={isInitialSetup ? project.brief : undefined}
+              onAnswersComplete={handleAnswersComplete}
+            />
+          </div>
         </div>
       </div>
+
+      {showSettings && (
+        <Dialog open={showSettings} onOpenChange={setShowSettings}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>AI Settings</DialogTitle>
+              <DialogDescription>
+                Configure your AI model preferences and API keys
+              </DialogDescription>
+            </DialogHeader>
+            <Settings />
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

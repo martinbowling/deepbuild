@@ -73,14 +73,16 @@ export interface StoredProject {
   name: string;
   timestamp: number;
   brief: ProjectBrief;
-  response: AIResponse;
   files: FileImplementation[];
 }
 
 export interface FileImplementation {
+  id: string;
+  projectId: string;
   path: string;
   content: string;
   status: 'pending' | 'completed' | 'error' | 'regenerating';
+  purpose: string;
   error?: string;
 }
 

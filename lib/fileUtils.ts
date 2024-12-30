@@ -25,3 +25,7 @@ export function validateFiles(paths: string[], files: File[]): Record<string, Fi
 
   return validFiles;
 }
+
+export function clearProjectFromStorage(projectId: string) {
+  localStorage.removeItem(`project-${projectId}`);
+}

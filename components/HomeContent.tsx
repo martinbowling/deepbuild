@@ -27,6 +27,7 @@ import {
 import { ProjectView } from './ProjectView';
 import { StoredProject } from '@/lib/types';
 import { fileManager } from '@/lib/fileOperations';
+import { getConfig } from '@/lib/config';
 
 export default function HomeContent() {
   const [modalOpen, setModalOpen] = useState(false);
@@ -42,12 +43,38 @@ export default function HomeContent() {
 
   const handleCreateProject = async (name: string, description: string) => {
     try {
+      // Check if API is configured
+      const config = getConfig();
+      const apiKey = config.selectedModel === 'deepseek' ? config.deepseekKey : config.hyperbolicKey;
+      
+      if (!apiKey) {
+        throw new Error(`Please configure your ${config.selectedModel === 'deepseek' ? 'DeepSeek' : 'Hyperbolic'} API key in settings before creating a project.`);
+      }
+
       const briefResponse = await sendMessage(
         `Create a project brief for the following utility app: ${description}`,
         'brief'
       );
 
-      const parsedBrief = JSON.parse(briefResponse.match(/<final_json>(.*?)<\/final_json>/s)?.[1] || '{}');
+      console.log('Raw API Response:', briefResponse);
+
+      // Extract JSON from between final_json tags
+      const match = briefResponse.match(/<final_json>([^]*?)<\/final_json>/);
+      console.log('Regex match result:', match);
+      
+      if (!match) {
+        throw new Error('Invalid response format: Missing JSON data');
+      }
+
+      const jsonContent = match[1].trim();
+      console.log('Extracted JSON content:', jsonContent);
+
+      const parsedBrief = JSON.parse(jsonContent);
+      console.log('Parsed brief:', parsedBrief);
+
+      if (!parsedBrief?.project_brief?.technical_outline?.basic_structure?.files) {
+        throw new Error('Invalid project brief format: Missing required structure');
+      }
       
       // First save the project
       const projectId = await saveProject(name, parsedBrief);
@@ -105,7 +132,7 @@ Ensure the code follows best practices and includes proper error handling.`;
           console.error(`Error implementing file ${file.file}:`, error);
           await updateProjectFile(projectId, file.file, {
             status: 'error',
-            error: error.message
+            error: error instanceof Error ? error.message : 'Unknown error occurred'
           });
         }
       }

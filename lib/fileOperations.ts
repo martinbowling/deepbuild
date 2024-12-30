@@ -1,246 +1,201 @@
 'use client';
 
-import { openDB, DBSchema, IDBPDatabase } from 'idb';
-import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
-import { AIResponse, StoredProject, ProjectBrief, FileImplementation } from './types';
+import { StoredProject, FileImplementation, ProjectBrief } from './types';
+import { v4 as uuidv4 } from 'uuid';
 
-interface ProjectDB extends DBSchema {
-  projects: {
-    key: string;
-    value: StoredProject;
-    indexes: { 'by-timestamp': number };
-  };
-}
+const DB_NAME = 'deepbuild_db';
+const DB_VERSION = 1;
+const PROJECTS_STORE = 'projects';
+const FILES_STORE = 'files';
 
-const DB_NAME = 'hyperbolic-projects';
-const STORE_NAME = 'projects';
-
-export class FileManager {
-  private db: IDBPDatabase<ProjectDB> | null = null;
+class FileManager {
+  private db: IDBDatabase | null = null;
 
   constructor() {
-    // Initialize the database when the class is instantiated
-    this.init().catch(console.error);
+    this.initDB();
   }
 
-  async init() {
-    if (this.db) return; // Already initialized
-    
-    try {
-      this.db = await openDB<ProjectDB>(DB_NAME, 1, {
-        upgrade(db) {
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-            store.createIndex('by-timestamp', 'timestamp');
-          }
-        },
-      });
-    } catch (error) {
-      console.error('Failed to initialize database:', error);
-      throw error;
+  private async initDB(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+      request.onerror = () => reject(request.error);
+      
+      request.onsuccess = () => {
+        this.db = request.result;
+        resolve();
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        
+        // Create projects store
+        if (!db.objectStoreNames.contains(PROJECTS_STORE)) {
+          const projectStore = db.createObjectStore(PROJECTS_STORE, { keyPath: 'id' });
+          projectStore.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+
+        // Create files store
+        if (!db.objectStoreNames.contains(FILES_STORE)) {
+          const fileStore = db.createObjectStore(FILES_STORE, { keyPath: 'id' });
+          fileStore.createIndex('projectId', 'projectId', { unique: false });
+          fileStore.createIndex('path', 'path', { unique: false });
+        }
+      };
+    });
+  }
+
+  private async ensureDB(): Promise<void> {
+    if (!this.db) {
+      await this.initDB();
     }
+  }
+
+  private getTransaction(storeNames: string | string[], mode: IDBTransactionMode = 'readonly'): IDBTransaction {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    return this.db.transaction(storeNames, mode);
+  }
+
+  private getStore(transaction: IDBTransaction, storeName: string): IDBObjectStore {
+    return transaction.objectStore(storeName);
   }
 
   async saveProject(name: string, brief: ProjectBrief): Promise<string> {
-    if (!this.db) await this.init();
+    await this.ensureDB();
+    const projectId = uuidv4();
     
+    const files = brief.project_brief.technical_outline.basic_structure.files.map(file => ({
+      id: uuidv4(),
+      projectId,
+      path: file.file,
+      content: '',
+      status: 'pending' as const,
+      purpose: file.purpose
+    }));
+
     const project: StoredProject = {
-      id: crypto.randomUUID(),
+      id: projectId,
       name,
       timestamp: Date.now(),
       brief,
-      response: {
-        thought_process: {
-          problem_analysis: '',
-          solution_approach: '',
-          implementation_plan: '',
-          potential_issues: ''
-        },
-        assistant_reply: '',
-        files_to_create: [],
-        files_to_edit: []
-      },
-      files: brief.project_brief.technical_outline.basic_structure.files.map(file => ({
-        path: file.file,
-        content: '',
-        status: 'pending'
-      }))
+      files
     };
 
-    await this.db!.put(STORE_NAME, project);
-    return project.id;
+    const transaction = this.getTransaction([PROJECTS_STORE, FILES_STORE], 'readwrite');
+    const projectStore = this.getStore(transaction, PROJECTS_STORE);
+    const fileStore = this.getStore(transaction, FILES_STORE);
+
+    return new Promise((resolve, reject) => {
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => resolve(projectId);
+
+      projectStore.put(project);
+      files.forEach(file => fileStore.put(file));
+    });
   }
 
-  async updateProjectFile(projectId: string, filePath: string, implementation: Partial<FileImplementation>) {
-    if (!this.db) await this.init();
-    
-    const project = await this.getProject(projectId);
-    if (!project) throw new Error('Project not found');
+  async getProject(id: string): Promise<StoredProject | null> {
+    await this.ensureDB();
+    const transaction = this.getTransaction([PROJECTS_STORE, FILES_STORE]);
+    const projectStore = this.getStore(transaction, PROJECTS_STORE);
+    const fileStore = this.getStore(transaction, FILES_STORE);
 
-    const fileIndex = project.files.findIndex(f => f.path === filePath);
-    if (fileIndex === -1) {
-      project.files.push({
-        path: filePath,
-        content: implementation.content || '',
-        status: implementation.status || 'pending'
-      });
-    } else {
-      project.files[fileIndex] = {
-        ...project.files[fileIndex],
-        ...implementation
+    return new Promise((resolve, reject) => {
+      transaction.onerror = () => reject(transaction.error);
+
+      const projectRequest = projectStore.get(id);
+      projectRequest.onsuccess = () => {
+        const project = projectRequest.result;
+        if (!project) {
+          resolve(null);
+          return;
+        }
+
+        const filesIndex = fileStore.index('projectId');
+        const filesRequest = filesIndex.getAll(id);
+        filesRequest.onsuccess = () => {
+          resolve({ ...project, files: filesRequest.result });
+        };
       };
-    }
-
-    await this.db!.put(STORE_NAME, project);
+    });
   }
 
-  async getProject(id: string): Promise<StoredProject | undefined> {
-    if (!this.db) await this.init();
-    return this.db!.get(STORE_NAME, id);
-  }
+  async getAllProjects(): Promise<StoredProject[]> {
+    await this.ensureDB();
+    const transaction = this.getTransaction([PROJECTS_STORE, FILES_STORE]);
+    const projectStore = this.getStore(transaction, PROJECTS_STORE);
+    const fileStore = this.getStore(transaction, FILES_STORE);
 
-  async listProjects(): Promise<StoredProject[]> {
-    try {
-      if (!this.db) await this.init();
-      const projects = await this.db!.getAllFromIndex(STORE_NAME, 'by-timestamp');
-      return projects || [];
-    } catch (error) {
-      console.error('Error listing projects:', error);
-      return [];
-    }
-  }
+    return new Promise((resolve, reject) => {
+      transaction.onerror = () => reject(transaction.error);
 
-  async exportProject(id: string): Promise<void> {
-    const project = await this.getProject(id);
-    if (!project) throw new Error('Project not found');
+      const projectsRequest = projectStore.getAll();
+      projectsRequest.onsuccess = () => {
+        const projects = projectsRequest.result;
+        const filesIndex = fileStore.index('projectId');
+        let completedProjects = 0;
+        const projectsWithFiles: StoredProject[] = [];
 
-    const zip = new JSZip();
-
-    // Add files to create
-    for (const file of project.response.files_to_create) {
-      zip.file(file.path, file.content);
-    }
-
-    // For files to edit, we'll create a separate directory
-    const editsDir = zip.folder('edited_files');
-    for (const edit of project.response.files_to_edit) {
-      editsDir!.file(edit.path, edit.new_snippet);
-    }
-
-    // Add metadata file
-    const metadata = {
-      thought_process: project.response.thought_process,
-      assistant_reply: project.response.assistant_reply,
-      edits: project.response.files_to_edit.map(edit => ({
-        path: edit.path,
-        reason: edit.change_reason,
-      })),
-    };
-    zip.file('project-metadata.json', JSON.stringify(metadata, null, 2));
-
-    // Generate and save zip file
-    const blob = await zip.generateAsync({ type: 'blob' });
-    saveAs(blob, `${project.name}-${project.id.slice(0, 8)}.zip`);
-  }
-
-  async parseAIResponse(responseText: string): Promise<AIResponse> {
-    try {
-      if (!responseText) {
-        throw new Error('Empty response from AI');
-      }
-
-      console.log('Parsing response:', responseText);
-
-      // Check if response is incomplete
-      if (!responseText.includes('</final_json>')) {
-        // Get everything after the last complete JSON object if any
-        const lastJsonEnd = responseText.lastIndexOf('}');
-        const incompleteContent = lastJsonEnd > -1 ? 
-          responseText.substring(lastJsonEnd + 1) : 
-          responseText;
-
-        // Request continuation
-        const continuationResponse = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: [
-              {
-                role: 'assistant',
-                content: responseText
-              },
-              {
-                role: 'user',
-                content: 'Please continue your response. Make sure to complete the JSON and include the closing </final_json> tag.'
-              }
-            ],
-            type: 'implementation'
-          })
+        projects.forEach(project => {
+          const filesRequest = filesIndex.getAll(project.id);
+          filesRequest.onsuccess = () => {
+            projectsWithFiles.push({ ...project, files: filesRequest.result });
+            completedProjects++;
+            if (completedProjects === projects.length) {
+              resolve(projectsWithFiles);
+            }
+          };
         });
-
-        if (!continuationResponse.ok) {
-          throw new Error('Failed to get response continuation');
-        }
-
-        const continuationData = await continuationResponse.json();
-        responseText += '\n' + continuationData.choices[0].message.content;
-
-        // Recursively parse the complete response
-        return this.parseAIResponse(responseText);
-      }
-
-      // Extract JSON between <final_json> tags
-      const match = responseText.match(/<final_json>([\s\S]*?)<\/final_json>/);
-      if (!match) {
-        // If no tags found, try parsing the entire response as JSON
-        try {
-          const response: AIResponse = JSON.parse(responseText);
-          if (this.validateAIResponse(response)) {
-            return response;
-          }
-          throw new Error('Invalid response structure');
-        } catch {
-          throw new Error('No JSON found between final_json tags and invalid JSON format');
-        }
-      }
-
-      const jsonStr = match[1];
-      const response: AIResponse = JSON.parse(jsonStr);
-
-      if (!this.validateAIResponse(response)) {
-        throw new Error('Invalid response structure');
-      }
-
-      return response;
-    } catch (error) {
-      console.error('Error parsing AI response:', error);
-      throw error;
-    }
+      };
+    });
   }
 
-  private validateAIResponse(response: any): response is AIResponse {
-    return (
-      response &&
-      typeof response === 'object' &&
-      'thought_process' in response &&
-      'assistant_reply' in response &&
-      Array.isArray(response.files_to_create) &&
-      Array.isArray(response.files_to_edit)
-    );
+  async updateProjectFile(projectId: string, filePath: string, updates: { content?: string; status?: 'pending' | 'completed' | 'error' | 'regenerating'; error?: string }): Promise<void> {
+    await this.ensureDB();
+    const transaction = this.getTransaction([FILES_STORE], 'readwrite');
+    const fileStore = this.getStore(transaction, FILES_STORE);
+    
+    return new Promise((resolve, reject) => {
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => resolve();
+
+      const filesIndex = fileStore.index('projectId');
+      const filesRequest = filesIndex.getAll(projectId);
+      
+      filesRequest.onsuccess = () => {
+        const files = filesRequest.result;
+        const file = files.find(f => f.path === filePath);
+        if (!file) {
+          reject(new Error(`File not found: ${filePath}`));
+          return;
+        }
+
+        fileStore.put({ ...file, ...updates });
+      };
+    });
   }
 
   async deleteProject(id: string): Promise<void> {
-    if (!this.db) await this.init();
-    
-    try {
-      await this.db!.delete(STORE_NAME, id);
-    } catch (error) {
-      console.error('Error deleting project:', error);
-      throw error;
-    }
+    await this.ensureDB();
+    const transaction = this.getTransaction([PROJECTS_STORE, FILES_STORE], 'readwrite');
+    const projectStore = this.getStore(transaction, PROJECTS_STORE);
+    const fileStore = this.getStore(transaction, FILES_STORE);
+
+    return new Promise((resolve, reject) => {
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => resolve();
+
+      const filesIndex = fileStore.index('projectId');
+      const filesRequest = filesIndex.getAll(id);
+      
+      filesRequest.onsuccess = () => {
+        const files = filesRequest.result;
+        projectStore.delete(id);
+        files.forEach(file => fileStore.delete(file.id));
+      };
+    });
   }
 }
 

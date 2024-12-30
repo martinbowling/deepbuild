@@ -1,5 +1,6 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, useCallback } from 'react';
 import { File } from '@/lib/types';
+import { clearProjectFromStorage } from '@/lib/fileUtils';
 
 interface FileContextType {
   files: File[];
@@ -17,4 +18,18 @@ export function useFileContext() {
     throw new Error('useFileContext must be used within a FileProvider');
   }
   return context;
+}
+
+export function useFiles() {
+  const clearProject = useCallback((projectId: string) => {
+    clearProjectFromStorage(projectId);
+    setCurrentProject(null);
+  }, []);
+
+  return {
+    currentProject,
+    updateProjectFile,
+    refreshProject,
+    clearProject,
+  };
 }

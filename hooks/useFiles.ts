@@ -1,148 +1,98 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { fileManager } from '@/lib/fileOperations';
-import { AIResponse, StoredProject, ProjectBrief, FileImplementation } from '@/lib/types';
-import { useToast } from '@/hooks/use-toast';
+import { StoredProject, ProjectBrief } from '@/lib/types';
 
 export function useFiles() {
   const [projects, setProjects] = useState<StoredProject[]>([]);
+  const [loading, setLoading] = useState(true);
   const [currentProject, setCurrentProject] = useState<StoredProject | null>(null);
-  const [loading, setLoading] = useState(false);
-  const { toast } = useToast();
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      loadProjects();
+  const refreshProjects = useCallback(async () => {
+    try {
+      const allProjects = await fileManager.getAllProjects();
+      setProjects(allProjects.sort((a, b) => b.timestamp - a.timestamp));
+    } catch (error) {
+      console.error('Error loading projects:', error);
     }
   }, []);
 
-  const loadProjects = useCallback(async () => {
-    if (typeof window === 'undefined') return;
-
-    try {
-      setLoading(true);
-      const loadedProjects = await fileManager.listProjects();
-      setProjects(loadedProjects || []);
-    } catch (error) {
-      console.error('Error loading projects:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to load projects',
-        variant: 'destructive',
-      });
-      setProjects([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  const saveProject = useCallback(async (name: string, brief: ProjectBrief) => {
-    try {
-      const id = await fileManager.saveProject(name, brief);
-      await loadProjects();
-      return id;
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to save project',
-        variant: 'destructive',
-      });
-      throw error;
-    }
-  }, [loadProjects, toast]);
-
   const refreshProject = useCallback(async (projectId: string) => {
-    if (!projectId) return;
     try {
       const project = await fileManager.getProject(projectId);
       if (project) {
         setCurrentProject(project);
-        // Also update the project in the projects list
-        setProjects(prev => prev.map(p => 
-          p.id === projectId ? project : p
-        ));
+        // Update the project in the projects list atomically
+        setProjects(prev => {
+          const projectIndex = prev.findIndex(p => p.id === projectId);
+          if (projectIndex === -1) return prev;
+          const newProjects = [...prev];
+          newProjects[projectIndex] = project;
+          return newProjects;
+        });
       }
     } catch (error) {
       console.error('Error refreshing project:', error);
     }
   }, []);
 
-  const updateProjectFile = useCallback(async (
-    projectId: string, 
-    filePath: string, 
-    implementation: Partial<FileImplementation>
-  ) => {
-    try {
-      await fileManager.updateProjectFile(projectId, filePath, implementation);
-      // Immediately refresh the project to update the UI
-      await refreshProject(projectId);
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: `Failed to update file: ${filePath}`,
-        variant: 'destructive',
-      });
-      throw error;
-    }
-  }, [refreshProject, toast]);
+  useEffect(() => {
+    const loadProjects = async () => {
+      setLoading(true);
+      try {
+        await refreshProjects();
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const exportProject = useCallback(async (id: string) => {
-    try {
-      await fileManager.exportProject(id);
-      toast({
-        title: 'Success',
-        description: 'Project exported successfully',
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to export project',
-        variant: 'destructive',
-      });
-    }
-  }, [toast]);
+    loadProjects();
+  }, [refreshProjects]);
 
-  const parseAIResponse = useCallback(async (responseText: string) => {
-    try {
-      return await fileManager.parseAIResponse(responseText);
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to parse AI response',
-        variant: 'destructive',
-      });
-      throw error;
-    }
-  }, [toast]);
+  const saveProject = async (name: string, brief: ProjectBrief) => {
+    const projectId = await fileManager.saveProject(name, brief);
+    await refreshProjects();
+    return projectId;
+  };
 
-  const deleteProject = useCallback(async (id: string) => {
+  const updateProjectFile = async (projectId: string, filePath: string, updates: { content?: string; status?: 'pending' | 'completed' | 'error' | 'regenerating'; error?: string }) => {
+    await fileManager.updateProjectFile(projectId, filePath, updates);
+    // After updating a file, refresh both the current project and the projects list
+    await Promise.all([
+      refreshProject(projectId),
+      refreshProjects()
+    ]);
+  };
+
+  const deleteProject = async (projectId: string) => {
     try {
-      await fileManager.deleteProject(id);
-      await loadProjects(); // Refresh the list after deletion
-      toast({
-        title: 'Success',
-        description: 'Project deleted successfully',
-      });
+      // Immediately update UI state
+      setProjects(prev => prev.filter(p => p.id !== projectId));
+      if (currentProject?.id === projectId) {
+        setCurrentProject(null);
+      }
+      
+      // Then perform the actual deletion
+      await fileManager.deleteProject(projectId);
+      
+      // Refresh the list to ensure consistency
+      await refreshProjects();
     } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to delete project',
-        variant: 'destructive',
-      });
+      console.error('Error deleting project:', error);
+      // If deletion fails, refresh to restore the original state
+      await refreshProjects();
     }
-  }, [loadProjects, toast]);
+  };
 
   return {
     projects,
-    currentProject,
     loading,
-    loadProjects,
     saveProject,
     updateProjectFile,
-    refreshProject,
-    exportProject,
     deleteProject,
-    parseAIResponse,
+    refreshProjects,
+    refreshProject,
+    currentProject
   };
 }
