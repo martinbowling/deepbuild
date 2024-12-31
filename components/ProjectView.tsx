@@ -376,7 +376,7 @@ Just let me know what interests you and I'll be happy to help.`
                 Configure your AI model preferences and API keys
               </DialogDescription>
             </DialogHeader>
-            <Settings />
+            <Settings onSaved={() => setShowSettings(false)} />
           </DialogContent>
         </Dialog>
       )}

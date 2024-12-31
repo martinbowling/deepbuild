@@ -169,7 +169,7 @@ export default function Dashboard() {
               Configure your AI model preferences and API keys
             </DialogDescription>
           </DialogHeader>
-          <Settings />
+          <Settings onSaved={() => setShowSettings(false)} />
         </DialogContent>
       </Dialog>
     </div>

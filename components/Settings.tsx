@@ -37,7 +37,7 @@ function SettingLabel({ children, tooltip }: { children: React.ReactNode; toolti
   );
 }
 
-export function Settings() {
+export function Settings({ onSaved }: { onSaved?: () => void }) {
   const [selectedModel, setSelectedModel] = useState<'deepseek' | 'hyperbolic'>('deepseek');
   const [apiKey, setApiKey] = useState('');
   const [deepseekConfig, setDeepseekConfig] = useState<ChatConfig>({
@@ -87,9 +87,12 @@ export function Settings() {
       updatedConfig.hyperbolicKey = apiKey;
     }
 
-    // Save to localStorage
-    localStorage.setItem('config', JSON.stringify(updatedConfig));
+    // Use the updateConfig function from lib/config.ts
+    updateConfig(updatedConfig);
     setShowUnconfiguredWarning(!isConfigured());
+    
+    // Call the onSaved callback if provided
+    onSaved?.();
   };
 
   return (
