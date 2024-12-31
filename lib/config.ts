@@ -136,10 +136,14 @@ export function getConfig(): Config {
     if (stored) {
       const storedConfig = JSON.parse(stored);
       // Merge with initial config to ensure all required fields exist
-      return { ...INITIAL_CONFIG, ...storedConfig };
+      const mergedConfig = { ...INITIAL_CONFIG, ...storedConfig };
+      // Ensure API keys are properly handled
+      if (storedConfig.deepseekKey === '') mergedConfig.deepseekKey = null;
+      if (storedConfig.hyperbolicKey === '') mergedConfig.hyperbolicKey = null;
+      return mergedConfig;
     }
   } catch (error) {
-    console.warn('Error reading stored config:', error);
+    console.error('Error reading stored config:', error);
   }
 
   // Fall back to environment variables or initial config
@@ -150,6 +154,11 @@ export function getConfig(): Config {
 export function updateConfig(updates: Partial<Config>) {
   const current = getConfig();
   const newConfig = { ...current, ...updates };
+  
+  // Ensure empty strings are converted to null for API keys
+  if (newConfig.deepseekKey === '') newConfig.deepseekKey = null;
+  if (newConfig.hyperbolicKey === '') newConfig.hyperbolicKey = null;
+  
   localStorage.setItem('ai-config', JSON.stringify(newConfig));
   return newConfig;
 }
